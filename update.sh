@@ -9,11 +9,12 @@ NC='\033[0m'
 
 echo -e "${BLUE}[*] Checking for updates...${NC}"
 
-# Pull latest changes
-git pull origin main
+# Pull latest changes - Robust strategy to handle divergent branches
+git fetch --all
+git reset --hard origin/main
 
 if [ $? -eq 0 ]; then
-    echo -e "${GREEN}[+] Successfully pulled latest changes.${NC}"
+    echo -e "${GREEN}[+] Successfully synced with latest remote state.${NC}"
     
     if [ -d ".venv" ]; then
         echo -e "${BLUE}[*] Updating dependencies in .venv...${NC}"
