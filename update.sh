@@ -1,129 +1,84 @@
 #!/bin/bash
-# update.sh — Tactical Update Engine for X5Sentry [HELLHOUND-class]
+# update.sh — High-Fidelity Update for xssentry v4.0 [HELLHOUND-class]
 
-# We use an embedded Python engine to handle the tactical animations 
-# (Case-Wave + Braille-Wave) for a premium terminal experience.
-
+# Zero-dependency Python HUD for immediate animation start
 python3 - << 'EOF'
 import sys
 import time
 import math
 import threading
 import subprocess
+import shutil
 import os
-
-try:
-    from rich.console import Console
-    from rich.text import Text
-    from rich.live import Live
-    from rich.align import Align
-    from rich.rule import Rule
-except ImportError:
-    # Fallback if rich is not installed (though it should be)
-    print("[*] Checking for updates...")
-    subprocess.run("git fetch --all && git reset --hard origin/main", shell=True)
-    sys.exit(0)
 
 # ------ CONFIGURATION & ASSETS ------
 _BRAILLE_WAVE = ["⠁", "⠃", "⠇", "⡇", "⣇", "⣧", "⣷", "⣿", "⣾", "⣶", "⣦", "⣄", "⡄", "⠄", "⠀", "⠀"]
-console = Console()
 
-def case_wave(text: str, frame: float) -> Text:
-    """Sinusoidal Case-Wave effect for terminal text."""
-    result = Text()
+def get_terminal_width():
+    try:
+        return shutil.get_terminal_size().columns
+    except:
+        return 80
+
+def case_wave_ansi(text, frame):
+    """Simple ANSI-based case-wave effect."""
+    result = ""
     for i, ch in enumerate(text):
         if ch == " ":
-            result.append(" ")
+            result += " "
             continue
-        val = math.sin(i * 0.45 + frame * 3.5)
-        if val > 0.6:
-            result.append(ch.upper(), style="bold red")
-        elif val > 0.2:
-            result.append(ch.upper(), style="red")
-        elif val > -0.2:
-            result.append(ch,         style="white")
-        elif val > -0.6:
-            result.append(ch.lower(), style="dim red")
+        val = math.sin(i * 0.45 + frame * 4.5)
+        if val > 0.7:
+            result += f"\033[1;31m{ch.upper()}\033[0m"
+        elif val > 0.3:
+            result += f"\033[31m{ch.upper()}\033[0m"
+        elif val > -0.1:
+            result += f"\033[31m{ch}\033[0m"
         else:
-            result.append(ch.lower(), style="dim")
+            result += f"\033[2;31m{ch.lower()}\033[0m"
     return result
 
 def draw_ui(text, stop_event):
-    """Animates the Braille-Wave and Case-Wave HUD."""
+    """Animates a single-line HUD using pure ANSI (Zero Dependencies)."""
     n = len(_BRAILLE_WAVE)
-    width = 26
-    with Live("", refresh_per_second=15, transient=True) as live:
+    sys.stdout.write("\033[?25l")
+    sys.stdout.flush()
+    try:
         while not stop_event.is_set():
             t = time.time()
-            txt = case_wave(text, t)
-            chars = ""
-            for i in range(width):
-                idx = int((i * 2 - t * 12)) % n
-                if idx < 0: idx += n
-                chars += _BRAILLE_WAVE[idx]
-            
-            content = Text.assemble(txt, "  ", (chars, "bold red"))
-            live.update(Align.center(content))
-            time.sleep(0.05)
+            tw = get_terminal_width()
+            txt = case_wave_ansi(text, t)
+            wave_width = (tw - len(text) - 10) // 2
+            if wave_width < 2:
+                sys.stdout.write(f"\r{txt}")
+            else:
+                left_chars = "".join(_BRAILLE_WAVE[int((i * 1.5 - t * 18)) % n] for i in range(wave_width))
+                right_chars = "".join(_BRAILLE_WAVE[int(((wave_width - i) * 1.5 + t * 18)) % n] for i in range(wave_width))
+                sys.stdout.write(f"\r\033[1;31m{left_chars}\033[0m  {txt}  \033[1;31m{right_chars}\033[0m")
+            sys.stdout.flush()
+            time.sleep(0.04)
+    finally:
+        sys.stdout.write("\r\033[K\033[?25h")
+        sys.stdout.flush()
 
 def run_task(text, cmd):
-    """Runs a command with a live tactical animation."""
+    """Runs a task with the immediate animation."""
     stop_event = threading.Event()
     t = threading.Thread(target=draw_ui, args=(text, stop_event), daemon=True)
     t.start()
     try:
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        return res
+        subprocess.run(cmd, shell=True, capture_output=True)
     finally:
         stop_event.set()
-        t.join(timeout=1)
-
-def print_banner():
-    art = r"""
-  __  __  ____ ____  _____ _   _ _____ ____  __   __
-  \ \/ / / ___/ ___|| ____| \ | |_   _|  _ \ \ \ / /
-   \  /  \___ \___ \|  _| |  \| | | | | |_) | \ V / 
-   /  \   ___) |__) | |___| |\  | | | |  _ <   | |  
-  /_/\_\ |____/____/|_____|_| \_| |_| |_| \_\  |_|  
-"""
-    console.print("\n")
-    console.print(Align.center(Text(art, style="bold white")))
-    console.print(Align.center(Text("—  S Y S T E M   U P D A T E   E N G I N E  —", style="dim")))
-    console.print(Rule(style="dim red"))
-    console.print("\n")
+        t.join()
 
 def main():
-    print_banner()
-    
-    # Phase 1: Git Sync
-    res = run_task("CHECKING FOR UPDATES", "git fetch --all && git reset --hard origin/main")
-    if res.returncode == 0:
-        console.print(Align.center(Text("[+] SUCCESS: SYNCED WITH REMOTE CLOUD", style="bold green")))
-    else:
-        console.print(Align.center(Text("[-] ERROR: FAILED TO SYNC WITH REMOTE", style="bold red")))
-        sys.exit(1)
-
-    # Phase 2: Dependency Update
+    run_task("SYNCING WITH REMOTE CLOUD", "git fetch --all && git reset --hard origin/main")
     if os.path.exists(".venv"):
-        res = run_task("UPDATING DEPENDENCIES", "./.venv/bin/pip install --upgrade pip && ./.venv/bin/pip install -e .")
-        if res.returncode == 0:
-            console.print(Align.center(Text("[+] SUCCESS: VIRTUAL ENVIRONMENT OPTIMIZED", style="bold green")))
-        else:
-            console.print(Align.center(Text("[-] ERROR: DEPENDENCY INJECTION FAILED", style="bold red")))
-            sys.exit(1)
-    else:
-        console.print(Align.center(Text("[!] WARNING: .VENV NOT FOUND - SKIPPING PIP", style="bold yellow")))
-    
-    console.print("\n")
-    console.print(Rule(style="dim red"))
-    console.print(Align.center(Text("THE SENTRY HAS BEEN RE-ARMED", style="bold white")))
-    console.print(Align.center(Text("VERSION: 4.0.0-STABLE", style="dim")))
-    console.print("\n")
+        run_task("OPTIMIZING VIRTUAL ENVIRONMENT", "./.venv/bin/pip install --upgrade pip && ./.venv/bin/pip install -e .")
+    print("\n\033[1;32m[+] THE SENTRY HAS BEEN RE-ARMED\033[0m")
+    print("\033[2mVERSION: 4.0.0-STABLE\033[0m\n")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        console.print("\n[bold red][!] UPDATE ABORTED BY USER[/bold red]")
-        sys.exit(1)
+    main()
 EOF

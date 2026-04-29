@@ -1,78 +1,90 @@
 #!/bin/bash
-# install.sh — Setup for xssentry v4.0 [HELLHOUND-class]
+# install.sh — High-Fidelity Setup for xssentry v4.0 [HELLHOUND-class]
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Zero-dependency Python HUD for immediate animation start
+python3 - << 'EOF'
+import sys
+import time
+import math
+import threading
+import subprocess
+import shutil
+import os
 
-echo -e "${BLUE}[*] Starting xssentry installation...${NC}"
+# ------ CONFIGURATION & ASSETS ------
+_BRAILLE_WAVE = ["⠁", "⠃", "⠇", "⡇", "⣇", "⣧", "⣷", "⣿", "⣾", "⣶", "⣦", "⣄", "⡄", "⠄", "⠀", "⠀"]
 
-# Check for Python 3
-if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}[!] Python 3 is required but not installed. Aborting.${NC}"
-    exit 1
-fi
+def get_terminal_width():
+    try:
+        return shutil.get_terminal_size().columns
+    except:
+        return 80
 
-# Create virtual environment
-echo -e "${BLUE}[*] Creating virtual environment (.venv)...${NC}"
-rm -rf .venv
-python3 -m venv .venv 2>/dev/null
-if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}[!] 'python3-venv' might be missing. Attempting to install...${NC}"
-    sudo apt-get update && sudo apt-get install -y python3-venv
-    python3 -m venv .venv
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}[!] Failed to create virtual environment. Please install 'python3-venv' manually.${NC}"
-        exit 1
-    fi
-fi
+def case_wave_ansi(text, frame):
+    """Simple ANSI-based case-wave effect."""
+    result = ""
+    for i, ch in enumerate(text):
+        if ch == " ":
+            result += " "
+            continue
+        val = math.sin(i * 0.45 + frame * 4.5)
+        if val > 0.7:
+            result += f"\033[1;31m{ch.upper()}\033[0m"
+        elif val > 0.3:
+            result += f"\033[31m{ch.upper()}\033[0m"
+        elif val > -0.1:
+            result += f"\033[31m{ch}\033[0m"
+        else:
+            result += f"\033[2;31m{ch.lower()}\033[0m"
+    return result
 
-# Define pip and python from venv
-VENV_PIP="./.venv/bin/pip"
-VENV_PYTHON="./.venv/bin/python3"
+def draw_ui(text, stop_event):
+    """Animates a single-line HUD using pure ANSI (Zero Dependencies)."""
+    n = len(_BRAILLE_WAVE)
+    sys.stdout.write("\033[?25l")
+    sys.stdout.flush()
+    try:
+        while not stop_event.is_set():
+            t = time.time()
+            tw = get_terminal_width()
+            txt = case_wave_ansi(text, t)
+            wave_width = (tw - len(text) - 10) // 2
+            if wave_width < 2:
+                sys.stdout.write(f"\r{txt}")
+            else:
+                left_chars = "".join(_BRAILLE_WAVE[int((i * 1.5 - t * 18)) % n] for i in range(wave_width))
+                right_chars = "".join(_BRAILLE_WAVE[int(((wave_width - i) * 1.5 + t * 18)) % n] for i in range(wave_width))
+                sys.stdout.write(f"\r\033[1;31m{left_chars}\033[0m  {txt}  \033[1;31m{right_chars}\033[0m")
+            sys.stdout.flush()
+            time.sleep(0.04)
+    finally:
+        sys.stdout.write("\r\033[K\033[?25h")
+        sys.stdout.flush()
 
-echo -e "${BLUE}[*] Installing dependencies in venv...${NC}"
-$VENV_PIP install --upgrade pip
-$VENV_PIP install playwright aiohttp beautifulsoup4 lxml rich
+def run_task(text, cmd):
+    """Runs a task with the immediate animation."""
+    stop_event = threading.Event()
+    t = threading.Thread(target=draw_ui, args=(text, stop_event), daemon=True)
+    t.start()
+    try:
+        subprocess.run(cmd, shell=True, capture_output=True)
+    finally:
+        stop_event.set()
+        t.join()
 
-# Install playwright browsers and system dependencies in venv
-echo -e "${BLUE}[*] Installing Playwright browsers and system dependencies...${NC}"
-$VENV_PYTHON -m playwright install chromium
-echo -e "${YELLOW}[!] Installing system libraries for Playwright (may require sudo)...${NC}"
-sudo $VENV_PYTHON -m playwright install-deps chromium
+def main():
+    if not os.path.exists(".venv"):
+        run_task("INITIALIZING VIRTUAL ENVIRONMENT", "python3 -m venv .venv")
+    run_task("OPTIMIZING DEPENDENCIES", "./.venv/bin/pip install --upgrade pip rich aiohttp beautifulsoup4 lxml playwright")
+    run_task("INSTALLING BROWSER CORES", "./.venv/bin/python3 -m playwright install chromium")
+    run_task("PATCHING SYSTEM LIBS", "sudo ./.venv/bin/python3 -m playwright install-deps chromium")
+    run_task("CREATING CLI WRAPPER", "cat <<WRAPPER > xssentry\n#!/bin/bash\nREAL_PATH=\\$(dirname \"\\$(readlink -f \"\\$0\")\")\n\"\\$REAL_PATH/.venv/bin/python3\" \"\\$REAL_PATH/xssentry.py\" \"\\$@\"\nWRAPPER\nchmod +x xssentry")
+    run_task("FINALIZING SYSTEM SETUP", "./.venv/bin/pip install -e .")
+    link_cmd = "REAL_WRAPPER_PATH=$(readlink -f 'xssentry'); [ -w '/usr/local/bin' ] && ln -sf \"$REAL_WRAPPER_PATH\" /usr/local/bin/xssentry || sudo ln -sf \"$REAL_WRAPPER_PATH\" /usr/local/bin/xssentry"
+    run_task("DEPLOYING GLOBAL LINK", link_cmd)
+    print("\n\033[1;32m[+] X5SENTRY DEPLOYED SUCCESSFULLY\033[0m")
+    print("\033[2mVERSION: 4.0.0-STABLE\033[0m\n")
 
-# Setup CLI command via wrapper
-echo -e "${BLUE}[*] Creating xssentry wrapper...${NC}"
-cat <<EOF > xssentry
-#!/bin/bash
-REAL_PATH=\$(dirname "\$(readlink -f "\$0")")
-"\$REAL_PATH/.venv/bin/python3" "\$REAL_PATH/xssentry.py" "\$@"
+if __name__ == "__main__":
+    main()
 EOF
-chmod +x xssentry
-
-# Install the package in editable mode within venv
-echo -e "${BLUE}[*] Finalizing setup...${NC}"
-$VENV_PIP install -e .
-
-# Create global symbolic link
-echo -e "${BLUE}[*] Creating global symbolic link in /usr/local/bin/xssentry...${NC}"
-REAL_WRAPPER_PATH=$(readlink -f "xssentry")
-if [ -w "/usr/local/bin" ]; then
-    ln -sf "$REAL_WRAPPER_PATH" /usr/local/bin/xssentry
-    GLOBAL_OK=1
-else
-    echo -e "${YELLOW}[!] Permission denied for /usr/local/bin. Attempting with sudo...${NC}"
-    sudo ln -sf "$REAL_WRAPPER_PATH" /usr/local/bin/xssentry
-    if [ $? -eq 0 ]; then GLOBAL_OK=1; fi
-fi
-
-if [ $? -eq 0 ] && [ "$GLOBAL_OK" == "1" ]; then
-    echo -e "${GREEN}[+] xssentry installed successfully!${NC}"
-    echo -e "${YELLOW}[!] You can now run 'xssentry' from anywhere in your terminal.${NC}"
-else
-    echo -e "${GREEN}[+] xssentry installed locally.${NC}"
-    echo -e "${YELLOW}[!] Global link failed. You can still run it as './xssentry' or add this directory to your PATH.${NC}"
-fi
