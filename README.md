@@ -50,7 +50,7 @@ To pull the latest changes and refresh your virtual environment:
 
 The v4.0 release transforms X5Sentry into a professional-grade XSS hunter with high-confidence validation:
 
-1.  **Autonomous Recon**: Automatically invokes the [Hellhound Spider](https://github.com/l4zz3rj0d/Hellhound-Spider) for deep reconnaissance, mapping traditional endpoints and SPA routes (Intercepting XHR/Fetch). No manual configuration needed — just provide a target.
+1.  **Autonomous Recon**: Automatically invokes the [Hellhound Spider](https://github.com/project-hellhound-org/Hellhound-Spider) for deep reconnaissance, mapping traditional endpoints and SPA routes (Intercepting XHR/Fetch). No manual configuration needed — just provide a target.
 2.  **Character Survivability (`FilterAnalyzer`)**: Probes WAF and sanitizer behavior before testing, identifying which characters (`<`, `>`, `'`, `"`, etc.) are blocked, encoded, or passed.
 3.  **Runtime Validation (`PlaywrightValidator`)**: Executes high-confidence payloads in a headless Chromium instance. Confirmed triggers are automatically captured as screenshots.
 4.  **Confidence Scorer**: A heuristic engine that evaluates findings (0-100) based on reflection quality, execution context, and browser-side signals.
